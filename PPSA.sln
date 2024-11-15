@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.11.35431.28
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PPSA", "PPSA.csproj", "{97C6D983-3CED-48F5-AFBF-C10EE5824387}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{97C6D983-3CED-48F5-AFBF-C10EE5824387}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{97C6D983-3CED-48F5-AFBF-C10EE5824387}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{97C6D983-3CED-48F5-AFBF-C10EE5824387}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{97C6D983-3CED-48F5-AFBF-C10EE5824387}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {105495B2-3B34-48DF-A0A5-CF5E85EEF8EA}
+	EndGlobalSection
+EndGlobal
