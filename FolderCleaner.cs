@@ -1,9 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+
 
 namespace PPSA
 {
@@ -21,7 +19,7 @@ namespace PPSA
             _daysThreshold = daysThreshold;
         }
 
-        public async Task CleanFoldersAsync(string[] folderPaths)
+        public void CleanFolders(string[] folderPaths)
         {
             foreach (var folderPath in folderPaths)
             {

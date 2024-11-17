@@ -1,63 +1,80 @@
 ﻿using libplctag;
-using libplctag.DataTypes.Simple;
-using libplctag.NativeImport;
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Timers;
 
 namespace PPSA
 {
     internal class Program
     {
+        // PLC data read interval
+        private const int INTERVAL = 2000;
 
-        private static Tag tag;
-        private static bool tagValue;
-        private static FolderCleaner folderCleaner;
-        private static TaskCompletionSource<bool> folderCleanupCompletionSource;
+        // PLC data read timer
+        private static System.Timers.Timer timer = new System.Timers.Timer(INTERVAL);
 
-        static async Task Main(string[] args)
+        // PLC connection parameters
+        private static Tag tag = new Tag
         {
-            // PLC connection parameters
-            tag = new Tag
-            {
-                Name = "PC_KAPAT_V7",
-                Gateway = "192.168.250.1",
-                Path = "1,0",
-                PlcType = PlcType.Omron,
-                Protocol = Protocol.ab_eip,
-            };
+            Name = "PC_KAPAT_V7",
+            Gateway = "192.168.250.1",
+            Path = "1,0",
+            PlcType = PlcType.Omron,
+            Protocol = Protocol.ab_eip,
+            Timeout = TimeSpan.FromMilliseconds(INTERVAL-100)
+        };
 
-            // FolderCleaner settings
-            int maxFolderCount = 15;
-            int daysThreshold = 15;
-            string[] folderPaths =
-            {
+        private static bool tagValue;
+
+        // FolderCleaner settings
+        private static int maxFolderCount = 15;
+        private static int daysThreshold = 15;
+        private static string[] folderPaths =
+        {
                 @"C:\OMRON\Soft-NA\Storage\SDCard\OperationLog",
                 @"C:\OMRON\Soft-NA\Storage\SDCard\Data Logging\Log Files\DataSet0",
                 @"C:\OMRON\Soft-NA\Storage\SDCard\Data Logging\Log Files\DataSet1",
                 @"C:\OMRON\Soft-NA\Storage\SDCard\Data Logging\Log Files\DataSet2"
-            };
-            folderCleaner = new FolderCleaner(maxFolderCount, daysThreshold);
-            folderCleaner.CleanupCompleted += FolderCleaner_CleanupCompleted;
+        };
 
-            // Start timer to control PLC variable
-            // The reading time from the PLC can be changed here.
-            Timer timer = new Timer(CheckPLCVariable, null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
-            AppDomain.CurrentDomain.ProcessExit += (s, e) => timer.Dispose();
+        private static readonly FolderCleaner folderCleaner = new FolderCleaner(maxFolderCount, daysThreshold);
+        private static TaskCompletionSource<bool> folderCleanupCompletionSource;
+
+        // ProgramCloser Settings
+        private static string programName = "Soft-NA";
+        private static readonly ProgramCloser programCloser = new ProgramCloser();
+        private static TaskCompletionSource<bool> programCloserCompletionSource;
+
+        static async Task Main(string[] args)
+        {
+            
+            folderCleaner.CleanupCompleted += FolderCleaner_CleanupCompleted;
+            programCloser.ClosingCompleted += ProgramCloser_ClosingCompleted;
+
+            timer.Elapsed += ReadPlcTag;
+            timer.AutoReset = true;
+            timer.Enabled = true;
+
 
             // Main program loop
             while (true)
             {
+                Console.WriteLine($"Tag değeri: {tagValue}");
+
                 if (tagValue)
                 {
-                    await CloseProgram("Soft-NA");
+                    timer.Stop();
+                    timer.Dispose();
+
+                    programCloserCompletionSource = new TaskCompletionSource<bool> ();
+                    programCloser.CloseProgram(programName);
+                    await programCloserCompletionSource.Task; // Wait until program closing is complete
+
                     folderCleanupCompletionSource = new TaskCompletionSource<bool>();
-                    await folderCleaner.CleanFoldersAsync(folderPaths);
+                    folderCleaner.CleanFolders(folderPaths);
                     await folderCleanupCompletionSource.Task;  // Wait until folder cleanup is complete
+
                     ShutdownComputer();
                 }
 
@@ -65,55 +82,19 @@ namespace PPSA
             }
         }
 
-        static void CheckPLCVariable(object state)
-        {
-            // Read PLC variable asynchronously
-            ReadPLCVariableAsync(tag);
-        }
-
-        static async void ReadPLCVariableAsync(Tag tagID)
+        private static void ReadPlcTag(Object source, ElapsedEventArgs e)
         {
             try
             {
-                // Read PLC variable asynchronously
-                bool value = true;
-                await tagID.ReadAsync();
-                bool result = tagID.GetBit(0);
-                Console.WriteLine($"Tag Value: {result}");
-
-                // If there has been a change, update the value and start the process
-                if (!value && !tagValue)
-                {
-                    tagValue = true;
-                }
-                else if (value && tagValue)
-                {
-                    tagValue = false;
-                }
-            } catch (Exception ex)
+                tag.Read();
+                tagValue = tag.GetBit(0);
+                Console.WriteLine($"Tag Value: {tagValue}");
+            }
+            catch (Exception ex)
             {
                 Console.WriteLine($"Error reading PLC: {ex.Message}");
-                // TODO: ERROR IN PLC COMMUNICATION CLOSE PROGRAM DELETE FOLDERS AND SHUT DOWN COMPUTER.
-            }
-
-        }
-
-        static async Task CloseProgram(string programName)
-        {
-            Process[] processes = Process.GetProcessesByName(programName);
-            if (processes.Length >= 1)
-            {
-                Console.WriteLine($"{programName} is being close.");
-                // Close all windows of the program
-                foreach (Process process in processes)
-                {
-                    process.CloseMainWindow();
-                    process.WaitForExit();
-                }
-            } else
-            {
-                Console.WriteLine("The program is not open, the shutdown is in progress.");
-                // TODO: notify main task as completed.
+                timer.Stop();
+                timer.Dispose();
             }
         }
 
@@ -134,6 +115,12 @@ namespace PPSA
         {
             Console.WriteLine(message);
             folderCleanupCompletionSource?.TrySetResult(true);
+        }
+
+        static void ProgramCloser_ClosingCompleted(object sender, string message)
+        {
+            Console.WriteLine(message);
+            programCloserCompletionSource?.TrySetResult(true);
         }
 
     }
