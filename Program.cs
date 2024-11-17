@@ -1,129 +1,207 @@
-﻿using libplctag;
-using System;
-using System.Threading;
+﻿using System;
 using System.Threading.Tasks;
 using System.Timers;
+using NLog;
+using PPSA.Models;
+using PPSA.Services;
 
 namespace PPSA
 {
-    internal class Program
+    class Program
     {
-        // PLC data read interval
-        private const int INTERVAL = 2000;
-
-        // PLC data read timer
-        private static System.Timers.Timer timer = new System.Timers.Timer(INTERVAL);
-
-        // PLC connection parameters
-        private static Tag tag = new Tag
-        {
-            Name = "PC_KAPAT_V7",
-            Gateway = "192.168.250.1",
-            Path = "1,0",
-            PlcType = PlcType.Omron,
-            Protocol = Protocol.ab_eip,
-            Timeout = TimeSpan.FromMilliseconds(INTERVAL-100)
-        };
-
-        private static bool tagValue;
-
-        // FolderCleaner settings
-        private static int maxFolderCount = 15;
-        private static int daysThreshold = 15;
-        private static string[] folderPaths =
-        {
-                @"C:\OMRON\Soft-NA\Storage\SDCard\OperationLog",
-                @"C:\OMRON\Soft-NA\Storage\SDCard\Data Logging\Log Files\DataSet0",
-                @"C:\OMRON\Soft-NA\Storage\SDCard\Data Logging\Log Files\DataSet1",
-                @"C:\OMRON\Soft-NA\Storage\SDCard\Data Logging\Log Files\DataSet2"
-        };
-
-        private static readonly FolderCleaner folderCleaner = new FolderCleaner(maxFolderCount, daysThreshold);
-        private static TaskCompletionSource<bool> folderCleanupCompletionSource;
-
-        // ProgramCloser Settings
-        private static string programName = "Soft-NA";
-        private static readonly ProgramCloser programCloser = new ProgramCloser();
-        private static TaskCompletionSource<bool> programCloserCompletionSource;
+        private static readonly ILogger _logger = LogManager.GetCurrentClassLogger();
+        private static Configuration _config;
+        private static Timer _timer;
+        private static PlcService _plcService;
+        private static ProgramCloser _programCloser;
+        private static FolderCleaner _folderCleaner;
+        private static ShutdownService _shutdownService;
+        private static bool _shutdownSequenceInitiated;
 
         static async Task Main(string[] args)
         {
-            
-            folderCleaner.CleanupCompleted += FolderCleaner_CleanupCompleted;
-            programCloser.ClosingCompleted += ProgramCloser_ClosingCompleted;
-
-            timer.Elapsed += ReadPlcTag;
-            timer.AutoReset = true;
-            timer.Enabled = true;
-
-
-            // Main program loop
-            while (true)
-            {
-                Console.WriteLine($"Tag değeri: {tagValue}");
-
-                if (tagValue)
-                {
-                    timer.Stop();
-                    timer.Dispose();
-
-                    programCloserCompletionSource = new TaskCompletionSource<bool> ();
-                    programCloser.CloseProgram(programName);
-                    await programCloserCompletionSource.Task; // Wait until program closing is complete
-
-                    folderCleanupCompletionSource = new TaskCompletionSource<bool>();
-                    folderCleaner.CleanFolders(folderPaths);
-                    await folderCleanupCompletionSource.Task;  // Wait until folder cleanup is complete
-
-                    ShutdownComputer();
-                }
-
-                await Task.Delay(Timeout.Infinite); // Endless waiting
-            }
-        }
-
-        private static void ReadPlcTag(Object source, ElapsedEventArgs e)
-        {
             try
             {
-                tag.Read();
-                tagValue = tag.GetBit(0);
-                Console.WriteLine($"Tag Value: {tagValue}");
+                _logger.Info("Starting PPSA application");
+
+                // Initialize services first
+                if (!InitializeServices())
+                {
+                    _logger.Error("Failed to initialize services. Starting shutdown sequence.");
+                    await InitiateShutdownSequence(isError: true);
+                    return;
+                }
+
+                // Only start PLC monitoring if initialization was successful
+                StartPlcMonitoring();
+
+                // Keep the application running
+                await Task.Delay(-1);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error reading PLC: {ex.Message}");
-                timer.Stop();
-                timer.Dispose();
+                _logger.Error(ex, "Fatal error in main application loop");
+                await InitiateShutdownSequence(isError: true);
             }
         }
 
-        static void ShutdownComputer()
+        private static bool InitializeServices()
         {
-            Console.WriteLine("PC shutdown process has begun.");
-            /*
-            // Shut down the computer after folder cleanup is complete
-            Process.Start(new ProcessStartInfo("shutdown", "/s /t 0")
+            try
             {
-                CreateNoWindow = true,
-                UseShellExecute = false
-            });
-            */
+                _config = new Configuration();
+
+                // Initialize timer first
+                _timer = new Timer(_config.Plc.ReadInterval);
+
+                try
+                {
+                    _plcService = new PlcService(_config.Plc);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "Failed to initialize PLC service");
+                    return false;
+                }
+
+                _programCloser = new ProgramCloser(_config.Program);
+                _folderCleaner = new FolderCleaner(_config.Folder);
+                _shutdownService = new ShutdownService(_config.Program);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to initialize services");
+                return false;
+            }
         }
 
-        static void FolderCleaner_CleanupCompleted(object sender, string message)
+        private static void StartPlcMonitoring()
         {
-            Console.WriteLine(message);
-            folderCleanupCompletionSource?.TrySetResult(true);
+            if (_timer == null)
+            {
+                _logger.Error("Timer not initialized. Cannot start PLC monitoring.");
+                return;
+            }
+
+            try
+            {
+                _timer.Elapsed += async (sender, e) => await CheckPlcTagAsync();
+                _timer.AutoReset = true;
+                _timer.Enabled = true;
+                _logger.Info("PLC monitoring started");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to start PLC monitoring");
+                Task.Run(() => InitiateShutdownSequence(isError: true)).Wait();
+            }
         }
 
-        static void ProgramCloser_ClosingCompleted(object sender, string message)
+        private static async Task CheckPlcTagAsync()
         {
-            Console.WriteLine(message);
-            programCloserCompletionSource?.TrySetResult(true);
+            if (_shutdownSequenceInitiated || _plcService == null)
+            {
+                return;
+            }
+
+            try
+            {
+                bool tagValue = await _plcService.ReadTagValue();
+                if (tagValue)
+                {
+                    await InitiateShutdownSequence();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error during PLC tag check");
+                await InitiateShutdownSequence(isError: true);
+            }
         }
 
+        private static async Task StopPlcMonitoring()
+        {
+            try
+            {
+                // Add null checks for timer and PLC service
+                if (_timer != null)
+                {
+                    _timer.Stop();
+                    _timer.Dispose();
+                    _timer = null;  // Set to null after disposal
+                }
+
+                if (_plcService != null)
+                {
+                    _plcService.Dispose();
+                    _plcService = null;  // Set to null after disposal
+                }
+
+                await Task.Delay(100); // Small delay to ensure cleanup
+                _logger.Info("PLC monitoring stopped successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error stopping PLC monitoring");
+                // Don't throw here, just log the error
+            }
+        }
+
+        private static async Task InitiateShutdownSequence(bool isError = false)
+        {
+            if (_shutdownSequenceInitiated)
+            {
+                return;
+            }
+
+            _shutdownSequenceInitiated = true;
+            _logger.Info($"Initiating shutdown sequence. Error triggered: {isError}");
+
+            try
+            {
+                // Stop PLC monitoring first
+                await StopPlcMonitoring();
+
+                // Close Soft-NA program if programCloser was initialized
+                if (_programCloser != null)
+                {
+                    bool programClosed = await _programCloser.CloseProgramAsync();
+                    if (!programClosed)
+                    {
+                        _logger.Warn("Failed to close program properly, continuing with shutdown sequence");
+                    }
+                }
+
+                // Clean folders if folderCleaner was initialized
+                if (_folderCleaner != null)
+                {
+                    bool foldersClean = await _folderCleaner.CleanFoldersAsync();
+                    if (!foldersClean)
+                    {
+                        _logger.Warn("Folder cleanup incomplete, continuing with shutdown sequence");
+                    }
+                }
+
+                // Initiate system shutdown if shutdownService was initialized
+                if (_shutdownService != null)
+                {
+                    await _shutdownService.InitiateShutdown();
+                }
+                else
+                {
+                    _logger.Error("ShutdownService not initialized, cannot perform system shutdown");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error during shutdown sequence");
+                if (!isError) // Prevent infinite recursion
+                {
+                    await InitiateShutdownSequence(isError: true);
+                }
+            }
+        }
     }
-
-    
 }
