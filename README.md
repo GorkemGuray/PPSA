@@ -5,8 +5,8 @@
 ## Overview
 --------
 
-The PPSA (PLC - PC Shutdown Automation) project is a software solution designed to automate and monitor industrial power systems. The project utilizes C# and the .NET Framework to create a robust and scalable application.
-
+The PPSA (PLC - PC Shutdown Automation) project is a software solution designed to properly shut down the PC and Omron Soft-NA program used in the industrial automation system. 
+The project uses C# and .NET Framework to create a robust and scalable application.
 ## Features
 --------
 
