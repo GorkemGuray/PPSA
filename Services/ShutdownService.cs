@@ -24,12 +24,14 @@ namespace PPSA.Services
 
                 await Task.Run(() =>
                 {
+                    
                     Process.Start(new ProcessStartInfo("shutdown",
                         $"/s /t {_config.ShutdownGracePeriod} /c \"System shutdown initiated by PPSA\"")
                     {
                         CreateNoWindow = true,
                         UseShellExecute = false
                     });
+                    
                 });
             }
             catch (Exception ex)

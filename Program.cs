@@ -20,8 +20,13 @@ namespace PPSA
 
         static async Task Main(string[] args)
         {
+
             try
             {
+
+                LogManager.ThrowConfigExceptions = true;
+                LogManager.ThrowExceptions = true;
+
                 _logger.Info("Starting PPSA application");
 
                 // Initialize services first
