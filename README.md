@@ -1,21 +1,19 @@
 
-
-Here is a sample README file for the PPSA project:
-
 # PPSA Project
 ================
 
 ## Overview
 --------
 
-The PPSA (Programmable Power System Automation) project is a software solution designed to automate and monitor industrial power systems. The project utilizes C# and the .NET Framework to create a robust and scalable application.
+The PPSA (PLC - PC Shutdown Automation) project is a software solution designed to automate and monitor industrial power systems. The project utilizes C# and the .NET Framework to create a robust and scalable application.
 
 ## Features
 --------
 
-* Automated shutdown and startup of industrial power systems
-* Real-time monitoring of PLC (Programmable Logic Controller) tags
-* Folder cleanup and organization
+* Automated shutdown
+* Omron Soft-NA shutdown process
+* Real-time monitoring of PLC tag
+* Folder cleanup
 * Error handling and logging using NLog
 * Support for multiple PLC configurations and folder paths
 
@@ -23,7 +21,7 @@ The PPSA (Programmable Power System Automation) project is a software solution d
 ------------
 
 * .NET Framework 4.7.2 or later
-* libplctag library for PLC communication
+* [libplctag.NET](https://github.com/libplctag/libplctag.NET) library for PLC communication
 * NLog library for logging and error handling
 * System.Configuration.ConfigurationManager library for configuration management
 
@@ -64,6 +62,6 @@ This project is licensed under the Unlicense. See the LICENSE.txt file for more 
 ## Acknowledgments
 ---------------
 
-* libplctag library for PLC communication
+* [libplctag.NET](https://github.com/libplctag/libplctag.NET) library for PLC communication
 * NLog library for logging and error handling
 * System.Configuration.ConfigurationManager library for configuration management
