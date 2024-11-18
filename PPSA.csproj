@@ -41,6 +41,9 @@
   <PropertyGroup>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+  <PropertyGroup>
+    <ApplicationIcon>poer_button_64x64.ico</ApplicationIcon>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="libplctag, Version=1.6.0.0, Culture=neutral, processorArchitecture=MSIL">
       <HintPath>packages\libplctag.1.6.0-alpha.0\lib\net472\libplctag.dll</HintPath>
@@ -79,6 +82,7 @@
     <Compile Include="Services\ShutdownService.cs" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="poer_button_64x64.ico" />
     <None Include="App.config" />
     <None Include="app.manifest" />
     <Content Include="nlog.config">
