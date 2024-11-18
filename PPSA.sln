@@ -9,6 +9,7 @@ Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
 		Release|Any CPU = Release|Any CPU
+		Description = The PPSA (PLC - PC Shutdown Automation) project is a software solution designed to properly shut down the PC and Omron Soft-NA program used in the industrial automation system.
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{97C6D983-3CED-48F5-AFBF-C10EE5824387}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
