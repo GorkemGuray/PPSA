@@ -3,10 +3,43 @@ using System.Diagnostics;
 using libplctag;
 using System.Threading.Tasks;
 using NLog;
+using System.ServiceProcess;
+using System.Configuration.Install;
+using System.ComponentModel;
 
 namespace PPSA
 {
-    class Program
+    [RunInstaller(true)]
+    public class PPSAServiceInstaller : Installer
+    {
+        public PPSAServiceInstaller()
+        {
+            var processInstaller = new ServiceProcessInstaller
+            {
+                Account = ServiceAccount.LocalSystem // Runs with full system privileges
+            };
+
+            var serviceInstaller = new ServiceInstaller
+            {
+                StartType = ServiceStartMode.Automatic,
+                DelayedAutoStart = true, // Starts after critical system services
+                ServiceName = "PPSA",
+                DisplayName = "PLC Process Shutdown Application",
+                Description = "Monitors PLC tags and manages system shutdown based on conditions"
+            };
+
+            // Set up recovery actions in case of failures
+            string recoveryCommand = $"sc start {serviceInstaller.ServiceName}";
+            string[] recoveryActions = new[] {
+                $"sc failure {serviceInstaller.ServiceName} reset= 0 actions= restart/60000/restart/60000/restart/60000"
+            };
+
+            Installers.Add(processInstaller);
+            Installers.Add(serviceInstaller);
+        }
+    }
+
+    public class PPSAService : ServiceBase
     {
         private static readonly ILogger _logger = LogManager.GetCurrentClassLogger();
         private static Tag _tag;
@@ -16,7 +49,24 @@ namespace PPSA
         private const int MAX_RETRIES = 3;
         private const int RETRY_DELAY_MS = 5000;
 
-        static async Task Main(string[] args)
+        public PPSAService()
+        {
+            ServiceName = "PPSA";
+        }
+
+        protected override void OnStart(string[] args)
+        {
+            _logger.Info("PPSA Service starting...");
+            Task.Run(async () => await RunService());
+        }
+
+        protected override void OnStop()
+        {
+            _logger.Info("PPSA Service stopping...");
+            _shouldRun = false;
+        }
+
+        private async Task RunService()
         {
             try
             {
@@ -28,17 +78,17 @@ namespace PPSA
                     return;
                 }
 
-                _logger.Info("PPSA application started");
+                _logger.Info("PPSA service started successfully");
 
                 while (_shouldRun)
                 {
                     await CheckShutdownConditions();
-                    await Task.Delay(1000); // Check every second
+                    await Task.Delay(1000);
                 }
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Unexpected error in main loop");
+                _logger.Error(ex, "Unexpected error in service loop");
                 await InitiateShutdown();
             }
         }
@@ -62,7 +112,6 @@ namespace PPSA
 
                     _tag.Initialize();
                     
-                    // Test the connection by trying to read the tag
                     await _tag.ReadAsync();
                     var status = _tag.GetStatus();
                     if (status != Status.Ok)
@@ -98,7 +147,6 @@ namespace PPSA
 
                 if (!_hasCheckedInitialDelay)
                 {
-                    // Initial check when tag is false
                     if (!shutdownTag)
                     {
                         if (timeSinceStart.TotalSeconds >= 20)
@@ -118,7 +166,6 @@ namespace PPSA
                     }
                     else
                     {
-                        // If tag is true during startup, immediately check soft-na
                         _hasCheckedInitialDelay = true;
                         if (!isSoftNaRunning)
                         {
@@ -134,7 +181,6 @@ namespace PPSA
                 }
                 else
                 {
-                    // Regular operation after initial delay
                     if (shutdownTag && !isSoftNaRunning)
                     {
                         _logger.Info("Tag is true and soft-na process not running - initiating shutdown");
@@ -184,6 +230,14 @@ namespace PPSA
                 // Force shutdown even if there's an error
                 Process.Start("shutdown", "/s /f /t 0");
             }
+        }
+    }
+
+    static class Program
+    {
+        static void Main()
+        {
+            ServiceBase.Run(new PPSAService());
         }
     }
 }
