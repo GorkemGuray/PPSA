@@ -16,14 +16,20 @@ namespace PPSA
         private static PlcService _plcService;
         private static FolderCleaner _folderCleaner;
         private static ShutdownService _shutdownService;
+        private static HealthMonitor _healthMonitor;
         private static bool _shutdownSequenceInitiated;
+        private static readonly object _shutdownLock = new object();
 
         static async Task Main(string[] args)
         {
+            AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+            {
+                _logger.Fatal(e.ExceptionObject as Exception, "Unhandled exception occurred");
+                InitiateShutdownSequence(isError: true).Wait();
+            };
 
             try
             {
-
                 LogManager.ThrowConfigExceptions = true;
                 LogManager.ThrowExceptions = true;
 
@@ -37,7 +43,10 @@ namespace PPSA
                     return;
                 }
 
-                // Only start PLC monitoring if initialization was successful
+                // Initialize health monitoring
+                InitializeHealthMonitoring();
+
+                // Start PLC monitoring
                 StartPlcMonitoring();
 
                 // Keep the application running
@@ -48,6 +57,30 @@ namespace PPSA
                 _logger.Error(ex, "Fatal error in main application loop");
                 await InitiateShutdownSequence(isError: true);
             }
+        }
+
+        private static void InitializeHealthMonitoring()
+        {
+            _healthMonitor = new HealthMonitor();
+
+            // Register PLC service health check
+            _healthMonitor.RegisterService("PlcService", () => _plcService?.IsHealthy() ?? false);
+
+            // Register folder cleaner health check
+            _healthMonitor.RegisterService("FolderCleaner", () => _folderCleaner != null);
+
+            // Register shutdown service health check
+            _healthMonitor.RegisterService("ShutdownService", () => _shutdownService != null);
+
+            // Monitor overall application health
+            _healthMonitor.HealthStatusChanged += (sender, e) =>
+            {
+                if (!e.Status.IsHealthy && e.Status.ServiceName == "PlcService")
+                {
+                    _logger.Error($"Critical service {e.Status.ServiceName} is unhealthy. Initiating shutdown sequence.");
+                    InitiateShutdownSequence(isError: true).Wait();
+                }
+            };
         }
 
         private static async Task<bool> InitializeServices()
@@ -88,6 +121,16 @@ namespace PPSA
                 {
                     _logger.Info($"Attempting to initialize PLC service (Attempt {retryCount + 1}/{_config.Plc.InitializeMaxRetries})");
                     _plcService = new PlcService(_config.Plc);
+
+                    // Subscribe to connection status changes
+                    _plcService.ConnectionStatusChanged += (sender, isConnected) =>
+                    {
+                        if (!isConnected)
+                        {
+                            _logger.Warn("PLC connection lost");
+                        }
+                    };
+
                     _logger.Info("Successfully initialized PLC service");
                     return true;
                 }
@@ -96,22 +139,18 @@ namespace PPSA
                     retryCount++;
                     _logger.Error(ex, $"Failed to initialize PLC service (Attempt {retryCount}/{_config.Plc.InitializeMaxRetries})");
 
-                    // Check if we've exceeded total timeout
-                    var elapsed = DateTime.Now - startTime;
-                    if (elapsed.TotalMilliseconds >= _config.Plc.InitializeTotalTimeoutMs)
+                    if (DateTime.Now - startTime > TimeSpan.FromMilliseconds(_config.Plc.InitializeTotalTimeoutMs))
                     {
                         _logger.Error($"PLC service initialization exceeded total timeout of {_config.Plc.InitializeTotalTimeoutMs}ms");
                         return false;
                     }
 
-                    // Check if we should try again
                     if (retryCount >= _config.Plc.InitializeMaxRetries)
                     {
                         _logger.Error($"Maximum retry attempts ({_config.Plc.InitializeMaxRetries}) reached for PLC service initialization");
                         return false;
                     }
 
-                    // Calculate delay with exponential backoff
                     int delayMs = Math.Min(
                         _config.Plc.InitializeInitialDelayMs * (int)Math.Pow(2, retryCount - 1),
                         _config.Plc.InitializeMaxDelayMs
@@ -166,7 +205,7 @@ namespace PPSA
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Error during PLC tag check after all retry attempts");
+                _logger.Error(ex, "Error during PLC tag check");
                 await InitiateShutdownSequence(isError: true);
             }
         }
@@ -175,55 +214,59 @@ namespace PPSA
         {
             try
             {
-                // Add null checks for timer and PLC service
                 if (_timer != null)
                 {
                     _timer.Stop();
                     _timer.Dispose();
-                    _timer = null;  // Set to null after disposal
+                    _timer = null;
                 }
 
                 if (_plcService != null)
                 {
                     _plcService.Dispose();
-                    _plcService = null;  // Set to null after disposal
+                    _plcService = null;
                 }
 
-                await Task.Delay(100); // Small delay to ensure cleanup
+                if (_healthMonitor != null)
+                {
+                    _healthMonitor.Dispose();
+                    _healthMonitor = null;
+                }
+
+                await Task.Delay(100);
                 _logger.Info("PLC monitoring stopped successfully");
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Error stopping PLC monitoring");
-                // Don't throw here, just log the error
             }
         }
 
         private static async Task InitiateShutdownSequence(bool isError = false)
         {
-            if (_shutdownSequenceInitiated)
+            lock (_shutdownLock)
             {
-                return;
+                if (_shutdownSequenceInitiated)
+                {
+                    return;
+                }
+                _shutdownSequenceInitiated = true;
             }
 
-            _shutdownSequenceInitiated = true;
             _logger.Info($"Initiating shutdown sequence. Error triggered: {isError}. Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss.ffff}");
 
             try
             {
-                // Stop PLC monitoring first
                 await StopPlcMonitoring();
 
-                // Wait for Soft-NA process to terminate by itself
                 _logger.Info("Starting process termination wait");
                 bool processTerminated = await WaitForProcessTermination();
                 if (!processTerminated)
                 {
-                    _logger.Error($"Soft-NA process did not terminate within the expected timeframe. Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss.ffff}");
+                    _logger.Error($"Process did not terminate within the expected timeframe. Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss.ffff}");
                     return;
                 }
 
-                // Clean folders only after process has terminated
                 if (_folderCleaner != null)
                 {
                     _logger.Info("Starting folder cleanup");
@@ -235,7 +278,6 @@ namespace PPSA
                     }
                 }
 
-                // Initiate system shutdown only after folder cleanup is complete
                 if (_shutdownService != null)
                 {
                     _logger.Info("Initiating system shutdown");
@@ -249,7 +291,7 @@ namespace PPSA
             catch (Exception ex)
             {
                 _logger.Error(ex, $"Error during shutdown sequence. Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss.ffff}");
-                if (!isError) // Prevent infinite recursion
+                if (!isError)
                 {
                     await InitiateShutdownSequence(isError: true);
                 }
@@ -265,6 +307,7 @@ namespace PPSA
                 _logger.Info($"Waiting for {processName} process to terminate (timeout: {timeout.TotalMinutes} minutes)");
                 
                 var startTime = DateTime.Now;
+                var checkInterval = TimeSpan.FromSeconds(1);
 
                 while (DateTime.Now - startTime < timeout)
                 {
@@ -274,7 +317,7 @@ namespace PPSA
                         _logger.Info($"{processName} process has terminated");
                         return true;
                     }
-                    await Task.Delay(1000); // Check every second
+                    await Task.Delay(checkInterval);
                 }
 
                 _logger.Error($"Timeout waiting for {processName} process to terminate");

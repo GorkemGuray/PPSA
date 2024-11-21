@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using libplctag;
 using NLog;
@@ -12,27 +13,90 @@ namespace PPSA.Services
         private readonly PlcConfig _config;
         private Tag _tag;
         private bool _disposed;
+        private bool _isConnected;
         private int _currentRetryCount = 0;
+        private readonly SemaphoreSlim _connectionLock = new SemaphoreSlim(1, 1);
+        private DateTime _lastSuccessfulRead;
 
         public event EventHandler<bool> TagValueChanged;
+        public event EventHandler<bool> ConnectionStatusChanged;
 
         public PlcService(PlcConfig config)
         {
             _config = config;
-            InitializeTag();
+            _lastSuccessfulRead = DateTime.MinValue;
+            InitializeTagAsync().Wait();
         }
 
-        private void InitializeTag()
+        private async Task InitializeTagAsync()
         {
-            _tag = new Tag
+            await _connectionLock.WaitAsync();
+            try
             {
-                Name = _config.TagName,
-                Gateway = _config.Gateway,
-                Path = _config.Path,
-                PlcType = PlcType.Omron,
-                Protocol = Protocol.ab_eip,
-                Timeout = TimeSpan.FromMilliseconds(_config.Timeout)
-            };
+                _tag?.Dispose();
+                
+                _tag = new Tag
+                {
+                    Name = _config.TagName,
+                    Gateway = _config.Gateway,
+                    Path = _config.Path,
+                    PlcType = PlcType.Omron,
+                    Protocol = Protocol.ab_eip,
+                    Timeout = TimeSpan.FromMilliseconds(_config.Timeout)
+                };
+
+                // Attempt initial connection
+                await _tag.ReadAsync();
+                var status = _tag.GetStatus();
+                if (status != Status.Ok)
+                {
+                    throw new InvalidOperationException($"Failed to read tag: {status}");
+                }
+                UpdateConnectionStatus(true);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to initialize PLC tag");
+                UpdateConnectionStatus(false);
+                throw;
+            }
+            finally
+            {
+                _connectionLock.Release();
+            }
+        }
+
+        private void UpdateConnectionStatus(bool isConnected)
+        {
+            if (_isConnected != isConnected)
+            {
+                _isConnected = isConnected;
+                ConnectionStatusChanged?.Invoke(this, isConnected);
+            }
+        }
+
+        public bool IsHealthy()
+        {
+            // Consider the service unhealthy if we haven't had a successful read in twice the read interval
+            var healthyTimeWindow = TimeSpan.FromMilliseconds(_config.ReadInterval * 2);
+            return _isConnected && (DateTime.UtcNow - _lastSuccessfulRead) <= healthyTimeWindow;
+        }
+
+        private async Task ReconnectAsync()
+        {
+            await _connectionLock.WaitAsync();
+            try
+            {
+                if (_isConnected)
+                    return;
+
+                _logger.Info("Attempting to reconnect to PLC...");
+                await InitializeTagAsync();
+            }
+            finally
+            {
+                _connectionLock.Release();
+            }
         }
 
         public async Task<bool> ReadTagValue()
@@ -42,37 +106,47 @@ namespace PPSA.Services
             {
                 try
                 {
-                    _logger.Debug($"Attempting to read PLC tag (Attempt {_currentRetryCount + 1}/{_config.MaxRetries})");
-                    await Task.Run(() => _tag.ReadAsync());
-                    var tagValue = _tag.GetBit(0);
-                    _logger.Debug($"Successfully read PLC tag value: {tagValue}");
-                    _currentRetryCount = 0; // Reset retry count on successful read
-                    TagValueChanged?.Invoke(this, tagValue);
-                    return tagValue;
+                    if (!_isConnected)
+                    {
+                        await ReconnectAsync();
+                        if (!_isConnected)
+                        {
+                            throw new InvalidOperationException("Failed to reconnect to PLC");
+                        }
+                    }
+
+                    await _tag.ReadAsync();
+                    var status = _tag.GetStatus();
+                    if (status != Status.Ok)
+                    {
+                        throw new InvalidOperationException($"Failed to read tag: {status}");
+                    }
+
+                    var value = _tag.GetInt8(0) != 0;
+                    _lastSuccessfulRead = DateTime.UtcNow;
+                    TagValueChanged?.Invoke(this, value);
+                    return value;
                 }
                 catch (Exception ex)
                 {
                     _currentRetryCount++;
-                    _logger.Error(ex, $"Error reading PLC tag (Attempt {_currentRetryCount}/{_config.MaxRetries})");
-                    
+                    UpdateConnectionStatus(false);
+
                     if (_currentRetryCount >= _config.MaxRetries)
                     {
-                        _logger.Error($"Maximum retry attempts ({_config.MaxRetries}) reached. Giving up.");
-                        throw new Exception($"Failed to read PLC tag after {_config.MaxRetries} attempts", ex);
+                        _logger.Error(ex, "Failed to read PLC tag after all retries");
+                        throw;
                     }
-                    
-                    // Calculate delay with exponential backoff, starting from InitialRetryDelayMs
-                    int delayMs = Math.Min(
-                        _config.InitialRetryDelayMs * (int)Math.Pow(2, _currentRetryCount - 1), 
+
+                    var delay = Math.Min(
+                        _config.InitialRetryDelayMs * Math.Pow(2, _currentRetryCount - 1),
                         _config.MaxRetryDelayMs
                     );
-                    _logger.Debug($"Waiting {delayMs}ms before retry attempt {_currentRetryCount + 1}");
-                    await Task.Delay(delayMs);
+                    await Task.Delay((int)delay);
                 }
             }
-            
-            // This should never be reached due to throw in catch block
-            return false;
+
+            throw new InvalidOperationException("Failed to read PLC tag after exhausting all retries");
         }
 
         public void Dispose()
@@ -88,6 +162,7 @@ namespace PPSA.Services
                 if (disposing)
                 {
                     _tag?.Dispose();
+                    _connectionLock.Dispose();
                 }
                 _disposed = true;
             }
