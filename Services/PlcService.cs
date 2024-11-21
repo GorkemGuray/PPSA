@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading.Tasks;
 using libplctag;
 using NLog;
@@ -12,6 +12,7 @@ namespace PPSA.Services
         private readonly PlcConfig _config;
         private Tag _tag;
         private bool _disposed;
+        private int _currentRetryCount = 0;
 
         public event EventHandler<bool> TagValueChanged;
 
@@ -36,19 +37,42 @@ namespace PPSA.Services
 
         public async Task<bool> ReadTagValue()
         {
-            try
+            _currentRetryCount = 0;
+            while (_currentRetryCount < _config.MaxRetries)
             {
-                await Task.Run(() => _tag.ReadAsync());
-                var tagValue = _tag.GetBit(0);
-                _logger.Debug($"Read PLC tag value: {tagValue}");
-                TagValueChanged?.Invoke(this, tagValue);
-                return tagValue;
+                try
+                {
+                    _logger.Debug($"Attempting to read PLC tag (Attempt {_currentRetryCount + 1}/{_config.MaxRetries})");
+                    await Task.Run(() => _tag.ReadAsync());
+                    var tagValue = _tag.GetBit(0);
+                    _logger.Debug($"Successfully read PLC tag value: {tagValue}");
+                    _currentRetryCount = 0; // Reset retry count on successful read
+                    TagValueChanged?.Invoke(this, tagValue);
+                    return tagValue;
+                }
+                catch (Exception ex)
+                {
+                    _currentRetryCount++;
+                    _logger.Error(ex, $"Error reading PLC tag (Attempt {_currentRetryCount}/{_config.MaxRetries})");
+                    
+                    if (_currentRetryCount >= _config.MaxRetries)
+                    {
+                        _logger.Error($"Maximum retry attempts ({_config.MaxRetries}) reached. Giving up.");
+                        throw new Exception($"Failed to read PLC tag after {_config.MaxRetries} attempts", ex);
+                    }
+                    
+                    // Calculate delay with exponential backoff, starting from InitialRetryDelayMs
+                    int delayMs = Math.Min(
+                        _config.InitialRetryDelayMs * (int)Math.Pow(2, _currentRetryCount - 1), 
+                        _config.MaxRetryDelayMs
+                    );
+                    _logger.Debug($"Waiting {delayMs}ms before retry attempt {_currentRetryCount + 1}");
+                    await Task.Delay(delayMs);
+                }
             }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Error reading PLC tag");
-                throw;
-            }
+            
+            // This should never be reached due to throw in catch block
+            return false;
         }
 
         public void Dispose()
