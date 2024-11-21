@@ -1,355 +1,188 @@
 using System;
-using System.Threading.Tasks;
-using System.Timers;
-using NLog;
-using PPSA.Models;
-using PPSA.Services;
 using System.Diagnostics;
+using libplctag;
+using System.Threading.Tasks;
+using NLog;
 
 namespace PPSA
 {
     class Program
     {
         private static readonly ILogger _logger = LogManager.GetCurrentClassLogger();
-        private static Configuration _config;
-        private static Timer _timer;
-        private static PlcService _plcService;
-        private static FolderCleaner _folderCleaner;
-        private static ShutdownService _shutdownService;
-        private static HealthMonitor _healthMonitor;
-        private static NetworkMonitor _networkMonitor;
-        private static bool _shutdownSequenceInitiated;
-        private static readonly object _shutdownLock = new object();
+        private static Tag _tag;
+        private static bool _shouldRun = true;
+        private static DateTime _startTime;
+        private static bool _hasCheckedInitialDelay = false;
+        private const int MAX_RETRIES = 3;
+        private const int RETRY_DELAY_MS = 5000;
 
         static async Task Main(string[] args)
         {
-            AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
-            {
-                _logger.Fatal(e.ExceptionObject as Exception, "Unhandled exception occurred");
-                InitiateShutdownSequence(isError: true).Wait();
-            };
-
             try
             {
-                LogManager.ThrowConfigExceptions = true;
-                LogManager.ThrowExceptions = true;
-
-                _logger.Info("*******************************Starting PPSA application*******************************");
-
-                // Initialize services first
-                if (!await InitializeServices())
+                _startTime = DateTime.Now;
+                if (!await InitializePlcWithRetry())
                 {
-                    _logger.Error("Failed to initialize services. Starting shutdown sequence.");
-                    await InitiateShutdownSequence(isError: true);
+                    _logger.Error("Failed to initialize PLC after all retries. Shutting down.");
+                    await InitiateShutdown();
                     return;
                 }
 
-                // Initialize health monitoring
-                InitializeHealthMonitoring();
+                _logger.Info("PPSA application started");
 
-                // Start PLC monitoring
-                StartPlcMonitoring();
-
-                // Keep the application running
-                await Task.Delay(-1);
+                while (_shouldRun)
+                {
+                    await CheckShutdownConditions();
+                    await Task.Delay(1000); // Check every second
+                }
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Fatal error in main application loop");
-                await InitiateShutdownSequence(isError: true);
+                _logger.Error(ex, "Unexpected error in main loop");
+                await InitiateShutdown();
             }
         }
 
-        private static void InitializeHealthMonitoring()
+        private static async Task<bool> InitializePlcWithRetry()
         {
-            _healthMonitor = new HealthMonitor();
-
-            // Register PLC service health check
-            _healthMonitor.RegisterService("PlcService", () => _plcService?.IsHealthy() ?? false);
-
-            // Register folder cleaner health check
-            _healthMonitor.RegisterService("FolderCleaner", () => _folderCleaner != null);
-
-            // Register shutdown service health check
-            _healthMonitor.RegisterService("ShutdownService", () => _shutdownService != null);
-
-            // Register network monitor health check
-            _healthMonitor.RegisterService("NetworkMonitor", () => _networkMonitor != null);
-
-            // Monitor overall application health
-            _healthMonitor.HealthStatusChanged += (sender, e) =>
-            {
-                if (!e.Status.IsHealthy && e.Status.ServiceName == "PlcService")
-                {
-                    // Give extra time for reconnection before shutting down
-                    Task.Delay(5000).Wait();
-                    
-                    // Check health again before proceeding with shutdown
-                    if (!_plcService.IsHealthy())
-                    {
-                        _logger.Error($"Critical service {e.Status.ServiceName} is still unhealthy after grace period. Initiating shutdown sequence.");
-                        InitiateShutdownSequence(isError: true).Wait();
-                    }
-                    else
-                    {
-                        _logger.Info($"Service {e.Status.ServiceName} recovered during grace period.");
-                    }
-                }
-            };
-        }
-
-        private static async Task<bool> InitializeServices()
-        {
-            try
-            {
-                _config = new Configuration();
-
-                // Initialize network monitor first to track connectivity
-                _networkMonitor = new NetworkMonitor();
-
-                // Initialize timer
-                _timer = new Timer(_config.Plc.ReadInterval);
-
-                // Initialize PLC service with retry mechanism
-                if (!await InitializePlcServiceWithRetry())
-                {
-                    return false;
-                }
-
-                _folderCleaner = new FolderCleaner(_config.Folder);
-                _shutdownService = new ShutdownService(_config.Program);
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Failed to initialize services");
-                return false;
-            }
-        }
-
-        private static async Task<bool> InitializePlcServiceWithRetry()
-        {
-            int retryCount = 0;
-            var startTime = DateTime.Now;
-
-            while (retryCount < _config.Plc.InitializeMaxRetries)
+            for (int attempt = 1; attempt <= MAX_RETRIES; attempt++)
             {
                 try
                 {
-                    _logger.Info($"Attempting to initialize PLC service (Attempt {retryCount + 1}/{_config.Plc.InitializeMaxRetries})");
-                    _plcService = new PlcService(_config.Plc);
-
-                    // Subscribe to connection status changes
-                    _plcService.ConnectionStatusChanged += (sender, isConnected) =>
+                    _logger.Info($"Attempting to initialize PLC (Attempt {attempt} of {MAX_RETRIES})");
+                    _tag = new Tag
                     {
-                        if (!isConnected)
-                        {
-                            _logger.Warn("PLC connection lost");
-                            // Don't take immediate action, let the health monitor handle it
-                        }
+                        Name = "PC_KAPAT_V7",
+                        Gateway = "192.168.250.1",
+                        Path = "1,0",
+                        PlcType = PlcType.Omron,
+                        Protocol = Protocol.ab_eip,
+                        Timeout = TimeSpan.FromMilliseconds(1000)
                     };
 
-                    _logger.Info("Successfully initialized PLC service");
+                    _tag.Initialize();
+                    
+                    // Test the connection by trying to read the tag
+                    await _tag.ReadAsync();
+                    var status = _tag.GetStatus();
+                    if (status != Status.Ok)
+                    {
+                        throw new Exception($"Tag initialization check failed with status: {status}");
+                    }
+
+                    _logger.Info("PLC initialized successfully");
                     return true;
                 }
                 catch (Exception ex)
                 {
-                    retryCount++;
-                    _logger.Error(ex, $"Failed to initialize PLC service (Attempt {retryCount}/{_config.Plc.InitializeMaxRetries})");
-
-                    if (DateTime.Now - startTime > TimeSpan.FromMilliseconds(_config.Plc.InitializeTotalTimeoutMs))
+                    _logger.Error(ex, $"PLC initialization attempt {attempt} failed");
+                    
+                    if (attempt < MAX_RETRIES)
                     {
-                        _logger.Error($"PLC service initialization exceeded total timeout of {_config.Plc.InitializeTotalTimeoutMs}ms");
-                        return false;
+                        _logger.Info($"Waiting {RETRY_DELAY_MS/1000} seconds before next retry...");
+                        await Task.Delay(RETRY_DELAY_MS);
                     }
-
-                    if (retryCount >= _config.Plc.InitializeMaxRetries)
-                    {
-                        _logger.Error($"Maximum retry attempts ({_config.Plc.InitializeMaxRetries}) reached for PLC service initialization");
-                        return false;
-                    }
-
-                    int delayMs = Math.Min(
-                        _config.Plc.InitializeInitialDelayMs * (int)Math.Pow(2, retryCount - 1),
-                        _config.Plc.InitializeMaxDelayMs
-                    );
-
-                    _logger.Debug($"Waiting {delayMs}ms before retry attempt {retryCount + 1}");
-                    await Task.Delay(delayMs);
                 }
             }
 
             return false;
         }
 
-        private static void StartPlcMonitoring()
-        {
-            if (_timer == null)
-            {
-                _logger.Error("Timer not initialized. Cannot start PLC monitoring.");
-                return;
-            }
-
-            try
-            {
-                _timer.Elapsed += async (sender, e) => await CheckPlcTagAsync();
-                _timer.AutoReset = true;
-                _timer.Enabled = true;
-                _logger.Info("PLC monitoring started");
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Failed to start PLC monitoring");
-                Task.Run(() => InitiateShutdownSequence(isError: true)).Wait();
-            }
-        }
-
-        private static async Task CheckPlcTagAsync()
-        {
-            if (_shutdownSequenceInitiated || _plcService == null)
-            {
-                return;
-            }
-
-            try
-            {
-                bool tagValue = await _plcService.ReadTagValue();
-                _logger.Debug($"PLC tag '{_config.Plc.TagName}' value: {tagValue}");
-                if (tagValue)
-                {
-                    _logger.Info("PLC tag value is True, initiating normal shutdown sequence");
-                    await InitiateShutdownSequence();
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Error during PLC tag check");
-                await InitiateShutdownSequence(isError: true);
-            }
-        }
-
-        private static async Task StopPlcMonitoring()
+        private static async Task CheckShutdownConditions()
         {
             try
             {
-                if (_timer != null)
+                bool isSoftNaRunning = Process.GetProcessesByName("soft-na").Length > 0;
+                bool shutdownTag = await ReadPlcTag(_tag);
+                TimeSpan timeSinceStart = DateTime.Now - _startTime;
+
+                if (!_hasCheckedInitialDelay)
                 {
-                    _timer.Stop();
-                    _timer.Dispose();
-                    _timer = null;
-                }
-
-                if (_plcService != null)
-                {
-                    _plcService.Dispose();
-                    _plcService = null;
-                }
-
-                if (_healthMonitor != null)
-                {
-                    _healthMonitor.Dispose();
-                    _healthMonitor = null;
-                }
-
-                if (_networkMonitor != null)
-                {
-                    _networkMonitor.Dispose();
-                    _networkMonitor = null;
-                }
-
-                await Task.Delay(100);
-                _logger.Info("PLC monitoring stopped successfully");
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Error stopping PLC monitoring");
-            }
-        }
-
-        private static async Task InitiateShutdownSequence(bool isError = false)
-        {
-            lock (_shutdownLock)
-            {
-                if (_shutdownSequenceInitiated)
-                {
-                    return;
-                }
-                _shutdownSequenceInitiated = true;
-            }
-
-            _logger.Info($"Initiating shutdown sequence. Error triggered: {isError}. Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss.ffff}");
-
-            try
-            {
-                await StopPlcMonitoring();
-
-                _logger.Info("Starting process termination wait");
-                bool processTerminated = await WaitForProcessTermination();
-                if (!processTerminated)
-                {
-                    _logger.Info("Soft-NA process is still running, proceeding with system shutdown anyway");
-                }
-
-                if (_folderCleaner != null)
-                {
-                    _logger.Info("Starting folder cleanup");
-                    bool foldersClean = await _folderCleaner.CleanFoldersAsync();
-                    if (!foldersClean)
+                    // Initial check when tag is false
+                    if (!shutdownTag)
                     {
-                        _logger.Warn("Folder cleanup incomplete");
+                        if (timeSinceStart.TotalSeconds >= 20)
+                        {
+                            _hasCheckedInitialDelay = true;
+                            if (!isSoftNaRunning)
+                            {
+                                _logger.Info("Tag is false and soft-na process not found after 20 seconds - initiating shutdown");
+                                await InitiateShutdown();
+                                return;
+                            }
+                            else
+                            {
+                                _logger.Info("soft-na process started within 20 seconds - continuing normal operation");
+                            }
+                        }
                     }
-                }
-
-                if (_shutdownService != null)
-                {
-                    _logger.Info("Initiating system shutdown");
-                    await _shutdownService.InitiateShutdown();
+                    else
+                    {
+                        // If tag is true during startup, immediately check soft-na
+                        _hasCheckedInitialDelay = true;
+                        if (!isSoftNaRunning)
+                        {
+                            _logger.Info("Tag is true and soft-na process not running - initiating shutdown");
+                            await InitiateShutdown();
+                            return;
+                        }
+                        else
+                        {
+                            _logger.Info("Tag is true but soft-na is running - continuing normal operation");
+                        }
+                    }
                 }
                 else
                 {
-                    _logger.Error("ShutdownService not initialized, cannot perform system shutdown");
+                    // Regular operation after initial delay
+                    if (shutdownTag && !isSoftNaRunning)
+                    {
+                        _logger.Info("Tag is true and soft-na process not running - initiating shutdown");
+                        await InitiateShutdown();
+                        return;
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, $"Error during shutdown sequence. Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss.ffff}");
-                if (!isError)
-                {
-                    await InitiateShutdownSequence(isError: true);
-                }
+                _logger.Error(ex, "Error checking shutdown conditions");
+                throw;
             }
         }
 
-        private static async Task<bool> WaitForProcessTermination()
+        private static async Task<bool> ReadPlcTag(Tag tag)
         {
             try
             {
-                var processName = _config.Program.ProcessToMonitor;
-                var timeout = TimeSpan.FromSeconds(_config.Program.ProcessTerminationTimeout);
-                _logger.Info($"Waiting for {processName} process to terminate (timeout: {timeout.TotalSeconds} seconds)");
-                
-                var startTime = DateTime.Now;
-                var checkInterval = TimeSpan.FromSeconds(1);
-
-                while (DateTime.Now - startTime < timeout)
+                await tag.ReadAsync();
+                var status = tag.GetStatus();
+                if (status != Status.Ok)
                 {
-                    var processes = Process.GetProcessesByName(processName);
-                    if (processes.Length == 0)
-                    {
-                        _logger.Info($"{processName} process has terminated");
-                        return true;
-                    }
-                    await Task.Delay(checkInterval);
+                    throw new Exception($"Error reading tag: {status}");
                 }
-
-                _logger.Info($"Timeout waiting for {processName} process to terminate");
-                return false;
+                return tag.GetBit(0);
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Error while waiting for process termination");
-                return false;
+                _logger.Error(ex, $"Error reading PLC tag: {tag.Name}");
+                throw;
+            }
+        }
+
+        private static async Task InitiateShutdown()
+        {
+            try
+            {
+                _logger.Info("Initiating system shutdown");
+                _shouldRun = false;
+                Process.Start("shutdown", "/s /t 0");
+                await Task.Delay(2000); // Give some time for logging
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error during shutdown");
+                // Force shutdown even if there's an error
+                Process.Start("shutdown", "/s /f /t 0");
             }
         }
     }
