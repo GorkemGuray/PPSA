@@ -263,8 +263,7 @@ namespace PPSA
                 bool processTerminated = await WaitForProcessTermination();
                 if (!processTerminated)
                 {
-                    _logger.Error($"Process did not terminate within the expected timeframe. Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss.ffff}");
-                    return;
+                    _logger.Info("Soft-NA process is still running, proceeding with system shutdown anyway");
                 }
 
                 if (_folderCleaner != null)
@@ -273,8 +272,7 @@ namespace PPSA
                     bool foldersClean = await _folderCleaner.CleanFoldersAsync();
                     if (!foldersClean)
                     {
-                        _logger.Warn("Folder cleanup incomplete, stopping shutdown sequence");
-                        return;
+                        _logger.Warn("Folder cleanup incomplete");
                     }
                 }
 
@@ -320,7 +318,7 @@ namespace PPSA
                     await Task.Delay(checkInterval);
                 }
 
-                _logger.Error($"Timeout waiting for {processName} process to terminate");
+                _logger.Info($"Timeout waiting for {processName} process to terminate");
                 return false;
             }
             catch (Exception ex)
