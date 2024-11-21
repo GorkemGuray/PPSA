@@ -17,6 +17,8 @@ namespace PPSA.Services
         private int _currentRetryCount = 0;
         private readonly SemaphoreSlim _connectionLock = new SemaphoreSlim(1, 1);
         private DateTime _lastSuccessfulRead;
+        private DateTime _connectionLostTime;
+        private const int CONNECTION_GRACE_PERIOD_MS = 5000; // 5 second grace period
 
         public event EventHandler<bool> TagValueChanged;
         public event EventHandler<bool> ConnectionStatusChanged;
@@ -110,6 +112,15 @@ namespace PPSA.Services
             if (_isConnected != isConnected)
             {
                 _isConnected = isConnected;
+                if (!isConnected)
+                {
+                    _connectionLostTime = DateTime.UtcNow;
+                    _logger.Warn($"PLC connection lost at {_connectionLostTime:yyyy-MM-dd HH:mm:ss.fff}");
+                }
+                else
+                {
+                    _logger.Info($"PLC connection restored at {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}");
+                }
                 ConnectionStatusChanged?.Invoke(this, isConnected);
             }
         }
@@ -118,7 +129,26 @@ namespace PPSA.Services
         {
             // Consider the service unhealthy if we haven't had a successful read in twice the read interval
             var healthyTimeWindow = TimeSpan.FromMilliseconds(_config.ReadInterval * 2);
-            return _isConnected && (DateTime.UtcNow - _lastSuccessfulRead) <= healthyTimeWindow;
+            var timeSinceLastRead = DateTime.UtcNow - _lastSuccessfulRead;
+
+            // If connection is lost but we're within grace period, still consider it healthy
+            if (!_isConnected)
+            {
+                var timeSinceConnectionLost = DateTime.UtcNow - _connectionLostTime;
+                if (timeSinceConnectionLost.TotalMilliseconds <= CONNECTION_GRACE_PERIOD_MS)
+                {
+                    _logger.Debug($"PLC connection lost but within grace period ({timeSinceConnectionLost.TotalMilliseconds:F0}ms < {CONNECTION_GRACE_PERIOD_MS}ms)");
+                    return true;
+                }
+                _logger.Warn($"PLC connection lost and grace period exceeded ({timeSinceConnectionLost.TotalMilliseconds:F0}ms > {CONNECTION_GRACE_PERIOD_MS}ms)");
+            }
+
+            var isHealthy = _isConnected && timeSinceLastRead <= healthyTimeWindow;
+            if (!isHealthy)
+            {
+                _logger.Warn($"PLC service unhealthy: Connected={_isConnected}, TimeSinceLastRead={timeSinceLastRead.TotalMilliseconds:F0}ms");
+            }
+            return isHealthy;
         }
 
         private async Task ReconnectAsync()

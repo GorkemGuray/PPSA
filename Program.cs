@@ -17,6 +17,7 @@ namespace PPSA
         private static FolderCleaner _folderCleaner;
         private static ShutdownService _shutdownService;
         private static HealthMonitor _healthMonitor;
+        private static NetworkMonitor _networkMonitor;
         private static bool _shutdownSequenceInitiated;
         private static readonly object _shutdownLock = new object();
 
@@ -72,13 +73,27 @@ namespace PPSA
             // Register shutdown service health check
             _healthMonitor.RegisterService("ShutdownService", () => _shutdownService != null);
 
+            // Register network monitor health check
+            _healthMonitor.RegisterService("NetworkMonitor", () => _networkMonitor != null);
+
             // Monitor overall application health
             _healthMonitor.HealthStatusChanged += (sender, e) =>
             {
                 if (!e.Status.IsHealthy && e.Status.ServiceName == "PlcService")
                 {
-                    _logger.Error($"Critical service {e.Status.ServiceName} is unhealthy. Initiating shutdown sequence.");
-                    InitiateShutdownSequence(isError: true).Wait();
+                    // Give extra time for reconnection before shutting down
+                    Task.Delay(5000).Wait();
+                    
+                    // Check health again before proceeding with shutdown
+                    if (!_plcService.IsHealthy())
+                    {
+                        _logger.Error($"Critical service {e.Status.ServiceName} is still unhealthy after grace period. Initiating shutdown sequence.");
+                        InitiateShutdownSequence(isError: true).Wait();
+                    }
+                    else
+                    {
+                        _logger.Info($"Service {e.Status.ServiceName} recovered during grace period.");
+                    }
                 }
             };
         }
@@ -89,7 +104,10 @@ namespace PPSA
             {
                 _config = new Configuration();
 
-                // Initialize timer first
+                // Initialize network monitor first to track connectivity
+                _networkMonitor = new NetworkMonitor();
+
+                // Initialize timer
                 _timer = new Timer(_config.Plc.ReadInterval);
 
                 // Initialize PLC service with retry mechanism
@@ -128,6 +146,7 @@ namespace PPSA
                         if (!isConnected)
                         {
                             _logger.Warn("PLC connection lost");
+                            // Don't take immediate action, let the health monitor handle it
                         }
                     };
 
@@ -195,8 +214,8 @@ namespace PPSA
 
             try
             {
-                _logger.Debug("Starting PLC tag check");
                 bool tagValue = await _plcService.ReadTagValue();
+                _logger.Debug($"PLC tag '{_config.Plc.TagName}' value: {tagValue}");
                 if (tagValue)
                 {
                     _logger.Info("PLC tag value is True, initiating normal shutdown sequence");
@@ -231,6 +250,12 @@ namespace PPSA
                 {
                     _healthMonitor.Dispose();
                     _healthMonitor = null;
+                }
+
+                if (_networkMonitor != null)
+                {
+                    _networkMonitor.Dispose();
+                    _networkMonitor = null;
                 }
 
                 await Task.Delay(100);
