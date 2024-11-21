@@ -33,7 +33,7 @@ namespace PPSA
                 LogManager.ThrowConfigExceptions = true;
                 LogManager.ThrowExceptions = true;
 
-                _logger.Info("Starting PPSA application");
+                _logger.Info("*******************************Starting PPSA application*******************************");
 
                 // Initialize services first
                 if (!await InitializeServices())
