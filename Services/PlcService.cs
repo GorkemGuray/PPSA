@@ -35,24 +35,63 @@ namespace PPSA.Services
             {
                 _tag?.Dispose();
                 
-                _tag = new Tag
-                {
-                    Name = _config.TagName,
-                    Gateway = _config.Gateway,
-                    Path = _config.Path,
-                    PlcType = PlcType.Omron,
-                    Protocol = Protocol.ab_eip,
-                    Timeout = TimeSpan.FromMilliseconds(_config.Timeout)
-                };
+                int initRetryCount = 0;
+                var initStartTime = DateTime.Now;
 
-                // Attempt initial connection
-                await _tag.ReadAsync();
-                var status = _tag.GetStatus();
-                if (status != Status.Ok)
+                while (initRetryCount < _config.InitializeMaxRetries)
                 {
-                    throw new InvalidOperationException($"Failed to read tag: {status}");
+                    try
+                    {
+                        _tag = new Tag
+                        {
+                            Name = _config.TagName,
+                            Gateway = _config.Gateway,
+                            Path = _config.Path,
+                            PlcType = PlcType.Omron,
+                            Protocol = Protocol.ab_eip,
+                            Timeout = TimeSpan.FromMilliseconds(_config.Timeout)
+                        };
+
+                        // Attempt initial connection
+                        await _tag.ReadAsync();
+                        var status = _tag.GetStatus();
+                        if (status != Status.Ok)
+                        {
+                            throw new InvalidOperationException($"Failed to read tag: {status}");
+                        }
+                        UpdateConnectionStatus(true);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        initRetryCount++;
+                        
+                        // Check if we've exceeded total timeout
+                        if ((DateTime.Now - initStartTime).TotalMilliseconds > _config.InitializeTotalTimeoutMs)
+                        {
+                            _logger.Error(ex, $"PLC initialization exceeded total timeout of {_config.InitializeTotalTimeoutMs}ms");
+                            throw;
+                        }
+
+                        // Check if we've exceeded max retries
+                        if (initRetryCount >= _config.InitializeMaxRetries)
+                        {
+                            _logger.Error(ex, $"Failed to initialize PLC after {_config.InitializeMaxRetries} attempts");
+                            throw;
+                        }
+
+                        // Calculate delay for next retry
+                        var delay = Math.Min(
+                            _config.InitializeInitialDelayMs * Math.Pow(2, initRetryCount - 1),
+                            _config.InitializeMaxDelayMs
+                        );
+
+                        _logger.Warn($"PLC initialization attempt {initRetryCount} failed. Retrying in {delay}ms");
+                        await Task.Delay((int)delay);
+                    }
                 }
-                UpdateConnectionStatus(true);
+
+                throw new InvalidOperationException($"Failed to initialize PLC after {_config.InitializeMaxRetries} attempts");
             }
             catch (Exception ex)
             {
@@ -138,10 +177,12 @@ namespace PPSA.Services
                         throw;
                     }
 
+                    // Use operational retry delays, not initialization delays
                     var delay = Math.Min(
-                        _config.InitialRetryDelayMs * Math.Pow(2, _currentRetryCount - 1),
-                        _config.MaxRetryDelayMs
+                        _config.OperationalInitialRetryDelayMs * Math.Pow(2, _currentRetryCount - 1),
+                        _config.OperationalMaxRetryDelayMs
                     );
+                    _logger.Warn($"PLC read attempt {_currentRetryCount} failed. Retrying in {delay}ms");
                     await Task.Delay((int)delay);
                 }
             }

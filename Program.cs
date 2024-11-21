@@ -304,7 +304,7 @@ namespace PPSA
             {
                 var processName = _config.Program.ProcessToMonitor;
                 var timeout = TimeSpan.FromSeconds(_config.Program.ProcessTerminationTimeout);
-                _logger.Info($"Waiting for {processName} process to terminate (timeout: {timeout.TotalMinutes} minutes)");
+                _logger.Info($"Waiting for {processName} process to terminate (timeout: {timeout.TotalSeconds} seconds)");
                 
                 var startTime = DateTime.Now;
                 var checkInterval = TimeSpan.FromSeconds(1);

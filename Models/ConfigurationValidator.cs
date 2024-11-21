@@ -21,6 +21,7 @@ namespace PPSA.Models
 
         private void ValidatePlcConfig(PlcConfig config, List<string> errors)
         {
+            // Basic PLC settings
             if (string.IsNullOrEmpty(config.TagName))
                 errors.Add("PLC TagName is required");
             if (string.IsNullOrEmpty(config.Gateway))
@@ -31,12 +32,24 @@ namespace PPSA.Models
                 errors.Add("PLC ReadInterval must be greater than 0");
             if (config.Timeout <= 0)
                 errors.Add("PLC Timeout must be greater than 0");
+
+            // Initialization settings
+            if (config.InitializeMaxRetries <= 0)
+                errors.Add("PLC InitializeMaxRetries must be greater than 0");
+            if (config.InitializeInitialDelayMs <= 0)
+                errors.Add("PLC InitializeInitialDelayMs must be greater than 0");
+            if (config.InitializeMaxDelayMs <= config.InitializeInitialDelayMs)
+                errors.Add("PLC InitializeMaxDelayMs must be greater than InitializeInitialDelayMs");
+            if (config.InitializeTotalTimeoutMs <= 0)
+                errors.Add("PLC InitializeTotalTimeoutMs must be greater than 0");
+
+            // Operational settings
             if (config.MaxRetries <= 0)
                 errors.Add("PLC MaxRetries must be greater than 0");
-            if (config.InitialRetryDelayMs <= 0)
-                errors.Add("PLC InitialRetryDelayMs must be greater than 0");
-            if (config.MaxRetryDelayMs <= config.InitialRetryDelayMs)
-                errors.Add("PLC MaxRetryDelayMs must be greater than InitialRetryDelayMs");
+            if (config.OperationalInitialRetryDelayMs <= 0)
+                errors.Add("PLC OperationalInitialRetryDelayMs must be greater than 0");
+            if (config.OperationalMaxRetryDelayMs <= config.OperationalInitialRetryDelayMs)
+                errors.Add("PLC OperationalMaxRetryDelayMs must be greater than OperationalInitialRetryDelayMs");
         }
 
         private void ValidateProgramConfig(ProgramConfig config, List<string> errors)

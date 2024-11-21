@@ -57,58 +57,69 @@ namespace PPSA.Models
 
     public class PlcConfig
     {
-        // Default values
-        private const int DEFAULT_READ_INTERVAL = 1000;
-        private const int DEFAULT_TIMEOUT = 5000;
-        private const int DEFAULT_MAX_RETRIES = 3;
-        private const int DEFAULT_INITIAL_RETRY_DELAY = 100;
-        private const int DEFAULT_MAX_RETRY_DELAY = 1000;
-        private const int DEFAULT_INITIALIZE_MAX_RETRIES = 5;
-        private const int DEFAULT_INITIALIZE_INITIAL_DELAY = 200;
-        private const int DEFAULT_INITIALIZE_MAX_DELAY = 2000;
-        private const int DEFAULT_INITIALIZE_TOTAL_TIMEOUT = 30000;
+        // Default values - Initialization
+        private const int DEFAULT_INITIALIZE_MAX_RETRIES = 4;          // From App.config
+        private const int DEFAULT_INITIALIZE_INITIAL_DELAY = 1500;     // From App.config
+        private const int DEFAULT_INITIALIZE_MAX_DELAY = 3000;         // From App.config
+        private const int DEFAULT_INITIALIZE_TOTAL_TIMEOUT = 20000;    // From App.config
+
+        // Default values - Operation
+        private const int DEFAULT_READ_INTERVAL = 1000;                // From App.config
+        private const int DEFAULT_TIMEOUT = 2000;                      // From App.config
+        private const int DEFAULT_MAX_RETRIES = 3;                     // From App.config
+        private const int DEFAULT_OPERATIONAL_INITIAL_RETRY_DELAY = 1000; // From App.config
+        private const int DEFAULT_OPERATIONAL_MAX_RETRY_DELAY = 2000;    // From App.config
 
         public string TagName { get; }
         public string Gateway { get; }
         public string Path { get; }
         public int ReadInterval { get; }
         public int Timeout { get; }
-        public int MaxRetries { get; }
-        public int InitialRetryDelayMs { get; }
-        public int MaxRetryDelayMs { get; }
+
+        // Initialization properties
         public int InitializeMaxRetries { get; }
         public int InitializeInitialDelayMs { get; }
         public int InitializeMaxDelayMs { get; }
         public int InitializeTotalTimeoutMs { get; }
 
+        // Operational properties
+        public int MaxRetries { get; }
+        public int OperationalInitialRetryDelayMs { get; }
+        public int OperationalMaxRetryDelayMs { get; }
+
         public PlcConfig()
         {
+            // Basic settings
             TagName = Configuration.GetConfigValue("PlcTagName", string.Empty);
             Gateway = Configuration.GetConfigValue("PlcGateway", string.Empty);
             Path = Configuration.GetConfigValue("PlcPath", string.Empty);
             ReadInterval = Configuration.GetConfigValue("PlcReadInterval", DEFAULT_READ_INTERVAL);
             Timeout = Configuration.GetConfigValue("PlcTimeout", DEFAULT_TIMEOUT);
-            MaxRetries = Configuration.GetConfigValue("PlcMaxRetries", DEFAULT_MAX_RETRIES);
-            InitialRetryDelayMs = Configuration.GetConfigValue("PlcInitialRetryDelayMs", DEFAULT_INITIAL_RETRY_DELAY);
-            MaxRetryDelayMs = Configuration.GetConfigValue("PlcMaxRetryDelayMs", DEFAULT_MAX_RETRY_DELAY);
+
+            // Initialization settings
             InitializeMaxRetries = Configuration.GetConfigValue("PlcInitializeMaxRetries", DEFAULT_INITIALIZE_MAX_RETRIES);
             InitializeInitialDelayMs = Configuration.GetConfigValue("PlcInitializeInitialDelayMs", DEFAULT_INITIALIZE_INITIAL_DELAY);
             InitializeMaxDelayMs = Configuration.GetConfigValue("PlcInitializeMaxDelayMs", DEFAULT_INITIALIZE_MAX_DELAY);
             InitializeTotalTimeoutMs = Configuration.GetConfigValue("PlcInitializeTotalTimeoutMs", DEFAULT_INITIALIZE_TOTAL_TIMEOUT);
+
+            // Operational settings
+            MaxRetries = Configuration.GetConfigValue("PlcMaxRetries", DEFAULT_MAX_RETRIES);
+            OperationalInitialRetryDelayMs = Configuration.GetConfigValue("PlcInitialRetryDelayMs", DEFAULT_OPERATIONAL_INITIAL_RETRY_DELAY);
+            OperationalMaxRetryDelayMs = Configuration.GetConfigValue("PlcMaxRetryDelayMs", DEFAULT_OPERATIONAL_MAX_RETRY_DELAY);
         }
     }
 
     public class ProgramConfig
     {
         // Default values
-        private const int DEFAULT_PROCESS_TERMINATION_TIMEOUT = 300;
-        private const int DEFAULT_SHUTDOWN_GRACE_PERIOD = 60;
-        private const int DEFAULT_PROCESS_CLOSE_TIMEOUT = 30;
+        private const int DEFAULT_PROCESS_TERMINATION_TIMEOUT = 15;   // Updated from 300 to 15
+        private const double DEFAULT_SHUTDOWN_GRACE_PERIOD = 0.033;   // Updated from 60 to 0.033
+        private const int DEFAULT_PROCESS_CLOSE_TIMEOUT = 3000;       // Updated from 30 to 3000
 
         public string ProgramName { get; }
         public string ProcessToMonitor { get; }
         public int ProcessTerminationTimeout { get; }
-        public int ShutdownGracePeriod { get; }
+        public double ShutdownGracePeriod { get; }
         public int ProcessCloseTimeout { get; }
 
         public ProgramConfig()
@@ -124,8 +135,8 @@ namespace PPSA.Models
     public class FolderConfig
     {
         // Default values
-        private const int DEFAULT_MAX_FOLDER_COUNT = 10;
-        private const int DEFAULT_DAYS_THRESHOLD = 30;
+        private const int DEFAULT_MAX_FOLDER_COUNT = 15;  // Updated from 10 to 15
+        private const int DEFAULT_DAYS_THRESHOLD = 15;    // Updated from 30 to 15
 
         public int MaxFolderCount { get; }
         public int DaysThreshold { get; }
